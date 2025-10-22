@@ -14,7 +14,8 @@ export type TokenLocationInfo = {
 export type Token = {
 	Info : TokenLocationInfo,
 	Value : string,
-	Kind : string
+	Kind : string,
+	Codepoint : number?
 }
 
 export type Tokens = {Token}

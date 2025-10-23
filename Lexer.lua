@@ -21,8 +21,7 @@ export type Token = {
 
 export type Tokens = {Token}
 
-local readu8, readstring, bufferlen = buffer.readu8, buffer.readstring, buffer.len -- as of 10/23/2025 buffers are not included in the FASTCALL list
--- bit32 library is included in the FASTCALL supported list so I will not be localizing them
+local readu8, readstring, bufferlen = buffer.readu8, buffer.readstring, buffer.len -- localizing just as a compromise between no optimizations and optimizations
 
 -- most of these byte comparison functions should be inlined
 

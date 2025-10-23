@@ -42,7 +42,7 @@ local function IsAssignable(byte : number) : boolean -- basically just for chara
 end
 
 --- Compares byte to lexerable bytes
---- Character set: [#(){}];,&|?]
+--- Character set: [#(){];,&|?]
 --- Byte set: [\35\40\41\123\125\93\59\44\38\124\63]
 ---
 --- @param byte number The byte you are comparing
@@ -160,10 +160,10 @@ local compiledReservedWords = {} do -- I "compile" the reserved words due to it 
 			local firstbyte = readu8(reservedBuffer, 0)
 
 			if IsLowerAlphabetical(firstbyte) then
-				buffer.writeu8(reservedBuffer, 0, firstbyte-32) -- converting to lowercase
+				buffer.writeu8(reservedBuffer, 0, firstbyte-32) -- converting to uppercase
 			end
 
-			compiledReservedWords[table.concat({v:byte(1, #v)})] = {
+			compiledReservedWords[string.pack(("B"):rep(reservedLength), v:byte(1, reservedLength))] = {
 				Token = "Reserved"..buffer.tostring(reservedBuffer),
 				Length = reservedLength
 			}
@@ -408,7 +408,7 @@ return function(source : buffer)
 		local ismultilinebyte = peek(2)
 
 		if not ismultilinebyte or IsNewLine(ismultilinebyte) then
-			return 2, "Commet"
+			return 2, "Comment"
 		end
 
 		local offset
@@ -417,7 +417,7 @@ return function(source : buffer)
 			local ismultilinedlongbyte = peek(3)
 
 			if not ismultilinedlongbyte or IsNewLine(ismultilinedlongbyte) then -- checks if it got a valid char or if it its still in the comment
-				return 3, "Commet"
+				return 3, "Comment"
 			end
 
 			if ismultilinedlongbyte == 91 or ismultilinedlongbyte == 61 then
@@ -437,7 +437,7 @@ return function(source : buffer)
 						else
 							"BrokenComment"
 				end
-				offset = Length + 2 -- basically --[==invalid[ turns it into a single line commet
+				offset = Length + 2 -- basically --[==invalid[ turns it into a single line Comment
 			else
 				offset = 4 -- no point in rechecking the [\.
 			end
@@ -455,7 +455,7 @@ return function(source : buffer)
 			offset += 1
 		end
 
-		return offset, "Commet" -- 2 to account for the comment (--)
+		return offset, "Comment" -- 2 to account for the comment (--)
 	end
 
 	local function getMultiLinedString(firstbyte : number)
@@ -598,10 +598,10 @@ return function(source : buffer)
 			elseif byte == 92 then -- \
 				lastescape = if lastescape ~= offset - 1 then offset else nil
 				offset += if peek(offset + 1) == 117 and peek(offset + 2) == 123 then
-					3 -- offsetting for \u{
+						3 -- offsetting for \u{
 					else
-					readBackSlash(offset)
-			elseif byte == 123 then -- {
+						readBackSlash(offset)
+			elseif byte == 123 and lastescape ~= offset - 1 then -- {
 				stringinterpolationdepth += 1
 				if peek(offset + 1) == 123 then
 					return offset + 2, "BrokenInterpDoubleBrace"
@@ -719,9 +719,7 @@ return function(source : buffer)
 			end
 		elseif IsWhitespace(byte) then
 			consume(1)
-		elseif IsLexerable(byte) then
-			addByte()
-		elseif byte >= 128 then
+		elseif not IsLexerable(byte) and byte >= 128 then
 			local Length, Codepoint = readUtf8Error(byte)
 			addToken(Length, "BrokenUnicode", currentLine, true, Codepoint)
 		else

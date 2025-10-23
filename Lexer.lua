@@ -1,5 +1,6 @@
 --!optimize 2
 --!native
+
 export type TokenInfo = {
 	Line : number,
 	Column : number,
@@ -20,8 +21,10 @@ export type Token = {
 
 export type Tokens = {Token}
 
-local readu8, readstring, bufferlen = buffer.readu8, buffer.readstring, buffer.len
-local band, bor, blshift = bit32.band, bit32.bor, bit32.lshift
+local readu8, readstring, bufferlen = buffer.readu8, buffer.readstring, buffer.len -- as of 10/23/2025 buffers are not included in the FASTCALL list
+-- bit32 library is included in the FASTCALL supported list so I will not be localizing them
+
+-- most of these byte comparison functions should be inlined
 
 --- Compares byte to assignable bytes
 --- Character set: [+*%^<>~=]
@@ -144,29 +147,27 @@ end
 local function CreateTokenInfo(Base : number, line : number)
 	return {
 		Line = line,
-		Column = Base + 1, -- convert to 1 base
-		Offset = Base
+		Column = Base + 1, -- convert to base 1
+		Offset = Base -- base 0
 	}
 end
 
 local compiledReservedWords = {} do -- I "compile" the reserved words due to it being significately faster to concaterate the bytes instead of just checking the concerated string. It would technically be faster to hardcode it in but I'd rather have it semi-readable
-	local reservedWords = {"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "end"}
-
+	local reservedWords = {
+		"and", "break", "do", "else", "elseif", "end", "false",
+		"for", "function", "if", "in", "local", "nil", "not",
+		"or", "repeat", "return", "then", "true", "until", "while"
+	}
+	
 	for i,v in reservedWords do
-		local reservedLength = #v
-
-		if reservedLength ~= 0 then
-			local reservedBuffer = buffer.fromstring(v)
-			local firstbyte = readu8(reservedBuffer, 0)
+		if #v ~= 0 then
+			local firstbyte = string.byte(v, 1)
 
 			if IsLowerAlphabetical(firstbyte) then
-				buffer.writeu8(reservedBuffer, 0, firstbyte-32) -- converting to uppercase
+				firstbyte -= 32
 			end
 
-			compiledReservedWords[string.pack(("B"):rep(reservedLength), v:byte(1, reservedLength))] = {
-				Token = "Reserved"..buffer.tostring(reservedBuffer),
-				Length = reservedLength
-			}
+			compiledReservedWords[v] = "Reserved"..string.char(firstbyte)..string.sub(v, 2)
 		end
 	end
 end
@@ -199,6 +200,7 @@ return function(source : buffer)
 			},
 			Codepoint = codepoint
 		}
+
 		if shouldConsume then
 			consume(tokenLength)
 		end
@@ -485,16 +487,10 @@ return function(source : buffer)
 				break
 			end
 
-			compiledword ..= byte
 			offset += 1
 		end
 
-		local IsReservedWord = compiledReservedWords[compiledword]
-
-		return offset, if IsReservedWord and offset == IsReservedWord.Length then
-				IsReservedWord.Token
-			else
-				"Name"
+		return offset, compiledReservedWords[readstring(source, position, offset)] or "Name" -- its overall better to just do one readstring request as it only creates 1 new string instead of a million different strings for each concat, additionally its an unknown for how long someone may name a variable
 	end
 
 	local function getAttributeLength() -- wow this code looks farmilier
@@ -636,8 +632,11 @@ return function(source : buffer)
 		for i = 1, size - 1 do
 			local nextByte = peek(i)
 
-			if nextByte and band(nextByte, 192) == 128 then
-				codepoint = bor(blshift(codepoint, 6), band(nextByte, 63))
+			-- not localizing bit32 as the proformance is negigable since lets be real who puts random unicode characters in the codebase to begin with
+			-- secondly assuming you do have the ability to optimize to 1/2 bit32 functions will be converted into FASTCALLs instead GETUPVAL / CALL
+			-- though if you dont have the ability to optimize it will be GETGLOBAL and GETTABLEKS so in this one case im assuming you do have the ability to optimize
+			if nextByte and bit32.band(nextByte, 192) == 128 then
+				codepoint = bit32.bor(bit32.lshift(codepoint, 6), bit32.band(nextByte, 63))
 			else
 				return i, nil
 			end

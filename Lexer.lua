@@ -1,6 +1,18 @@
 --!optimize 2
 --!native
 
+export type TokenKind = "BrokenUnicode" | "Character" | "Number" |
+"QuotedString" | "BrokenString" | "Comment" |
+"BlockComment" | "BrokenComment" | "RawString" |
+"BrokenString" | "Attribute" | "SubAssign" |
+"SkinnyArrow" | "DivAssign" | "FloorDiv" |
+"DoubleColon" | "ConcatAssign" |
+"Dot3" | "Dot2" | "AddAssign" |
+"MulAssign" | "ModAssign" | "PowAssign" |
+"LessEqual" | "GreaterEqual" | "NotEqual" |
+"Equal" | "BrokenString" | "BrokenInterpDoubleBrace" |
+"InterpStringBegin" | "InterpStringSimple" | "InterpStringMid"
+
 export type TokenInfo = {
 	Line : number,
 	Column : number,
@@ -15,13 +27,11 @@ export type TokenLocationInfo = {
 export type Token = {
 	Info : TokenLocationInfo,
 	Value : string,
-	Kind : string,
+	Kind : TokenKind,
 	Codepoint : number?
 }
 
 export type Tokens = {Token}
-
-local readu8, readstring, bufferlen = buffer.readu8, buffer.readstring, buffer.len -- localizing just as a compromise between no optimizations and optimizations
 
 -- most of these byte comparison functions should be inlined
 
@@ -143,15 +153,15 @@ local function IsWhitespace(byte : number)
 	return byte >= 9 and byte <= 13 or byte == 32
 end
 
-local function CreateTokenInfo(Base : number, line : number)
+local function CreatePositionInfo(base : number, line : number)
 	return {
 		Line = line,
-		Column = Base + 1, -- convert to base 1
-		Offset = Base -- base 0
+		Column = base + 1, -- convert to base 1
+		Offset = base -- base 0
 	}
 end
 
-local compiledReservedWords = {} do -- I "compile" the reserved words due to it being significately faster to concaterate the bytes instead of just checking the concerated string. It would technically be faster to hardcode it in but I'd rather have it semi-readable
+local compiledReservedWords = {} do
 	local reservedWords = {
 		"and", "break", "do", "else", "elseif", "end", "false",
 		"for", "function", "if", "in", "local", "nil", "not",
@@ -172,37 +182,73 @@ local compiledReservedWords = {} do -- I "compile" the reserved words due to it 
 end
 
 return function(source : buffer)
+	local tokens = {}
+	local tokenCount = 0
+
+	local sourceSize = buffer.len(source)
+	local base0Size = sourceSize - 1
+	
 	local furthestPosition = -1
-	local stringinterpolationdepth = 0
+	local stringInterpDepth = 0
+	
+	local currentPosition = 0
 	local currentLine = 1
-	local position = 0
+	local steppedLines = 0
 
-	local TokenCount = 0
-	local Tokens = {}
-
-	local sourceSize = bufferlen(source)
-	local base0Size = sourceSize-1
-
-	local function consume(Amount : number)
-		position += Amount
+	local function ConsumeBytes(Amount : number)
+		currentPosition += Amount
 	end
 
-	local function addToken(tokenLength : number, tokenType : string, startLine : number, shouldConsume : boolean, codepoint : number?)
-		TokenCount += 1
+	local function ConsumeLines()
+		if steppedLines ~= 0 then
+			currentLine += steppedLines
+			steppedLines = 0
+		end
+	end
 
-		Tokens[TokenCount] = {
-			Value = readstring(source, position, tokenLength),
-			Kind = tokenType,
-			Info = {
-				Start = CreateTokenInfo(position, startLine),
-				End = CreateTokenInfo(position + tokenLength, currentLine)
-			},
-			Codepoint = codepoint
+	local function AppendToken<t>(TokenData : t)
+		tokenCount += 1
+		tokens[tokenCount] = TokenData
+	end
+
+	local function CreateTokenInfo(length : number, startLine : number, endLine : number)
+		return {
+			Start = CreatePositionInfo(currentPosition, startLine),
+			End = CreatePositionInfo(currentPosition + length, endLine)
 		}
+	end
+
+	local function addToken(tokenLength : number, tokenType : string, startLine : number, shouldConsume : boolean)
+		AppendToken({
+			Value = buffer.readstring(source, currentPosition, tokenLength),
+			Kind = tokenType,
+			Info = CreateTokenInfo(tokenLength, startLine, currentLine + steppedLines)
+		})
 
 		if shouldConsume then
-			consume(tokenLength)
+			ConsumeBytes(tokenLength)
 		end
+	end
+
+	local function addUnicodeToken(unicodeLength : number, startline : number, codepoint : number?)
+		AppendToken({
+			Value = buffer.readstring(source, currentPosition, unicodeLength),
+			Kind = "BrokenUnicode",
+			Info = CreateTokenInfo(unicodeLength, startline, startline),
+			Codepoint = codepoint
+		})
+
+		ConsumeBytes(unicodeLength)
+	end
+
+	local function addSameLineToken(tokenLength : number, tokenType : string, startLine : number)
+		AppendToken({
+			Value = buffer.readstring(source, currentPosition, tokenLength),
+			Kind = tokenType,
+			Info = CreateTokenInfo(tokenLength, startLine, startLine)
+		})
+
+		ConsumeBytes(tokenLength)
 	end
 
 	local function addByte()
@@ -210,15 +256,15 @@ return function(source : buffer)
 	end
 
 	local function canPeek(Amount : number)
-		return position + Amount <= base0Size
+		return currentPosition + Amount <= base0Size
 	end
 
 	local function rawPeek(Amount : number)
-		local byte = readu8(source, position + Amount)
+		local byte = buffer.readu8(source, currentPosition + Amount)
 
-		if IsNewLine(byte) and furthestPosition < position + Amount then -- avoid increasing the line when peeking
-			currentLine += 1
-			furthestPosition = position + Amount
+		if IsNewLine(byte) and furthestPosition < currentPosition + Amount then
+			steppedLines += 1
+			furthestPosition = currentPosition + Amount
 		end
 
 		return byte
@@ -258,7 +304,7 @@ return function(source : buffer)
 		while canPeek(offset) do
 			local byte = rawPeek(offset)
 
-			if not (IsAlphabetical(byte) or IsDigit(byte) or byte == 95) then -- A-z 0-9 _
+			if not IsAlphanumericIdentifier(byte) then -- A-z 0-9 _
 				break
 			end
 
@@ -367,7 +413,7 @@ return function(source : buffer)
 						end
 						offset = CheckedAmount
 					else
-						return false, base0Size - position
+						return false, base0Size - currentPosition
 					end
 				else
 					offset += 1
@@ -489,7 +535,7 @@ return function(source : buffer)
 			offset += 1
 		end
 
-		return offset, compiledReservedWords[readstring(source, position, offset)] or "Name" -- its overall better to just do one readstring request as it only creates 1 new string instead of a million different strings for each concat, additionally its an unknown for how long someone may name a variable
+		return offset, compiledReservedWords[buffer.readstring(source, currentPosition, offset)] or "Name" -- its overall better to just do one readstring request as it only creates 1 new string instead of a million different strings for each concat, additionally its an unknown for how long someone may name a variable
 	end
 
 	local function getAttributeLength() -- wow this code looks farmilier
@@ -523,8 +569,10 @@ return function(source : buffer)
 			if peek(2) == 47 then
 				return 3, "DivAssign"
 			end
+			
 			return 2, "FloorDiv"
 		end
+
 		return 1, "Character"
 	end
 
@@ -532,6 +580,7 @@ return function(source : buffer)
 		if peek(1) == 58 then
 			return 2, "DoubleColon"
 		end
+
 		return 1, "Character"
 	end
 
@@ -555,7 +604,7 @@ return function(source : buffer)
 		end
 		return 1, "Character"
 	end
-
+	
 	local function getAssignmentLength(byte : number)
 		if peek(1) == 61 then
 			return 2, if byte == 43 then
@@ -597,7 +646,7 @@ return function(source : buffer)
 					else
 						readBackSlash(offset)
 			elseif byte == 123 and lastescape ~= offset - 1 then -- {
-				stringinterpolationdepth += 1
+				stringInterpDepth += 1
 				if peek(offset + 1) == 123 then
 					return offset + 2, "BrokenInterpDoubleBrace"
 				end
@@ -631,9 +680,6 @@ return function(source : buffer)
 		for i = 1, size - 1 do
 			local nextByte = peek(i)
 
-			-- not localizing bit32 as the proformance is negigable since lets be real who puts random unicode characters in the codebase to begin with
-			-- secondly assuming you do have the ability to optimize to 1/2 bit32 functions will be converted into FASTCALLs instead GETUPVAL / CALL
-			-- though if you dont have the ability to optimize it will be GETGLOBAL and GETTABLEKS so in this one case im assuming you do have the ability to optimize
 			if nextByte and bit32.band(nextByte, 192) == 128 then
 				codepoint = bit32.bor(bit32.lshift(codepoint, 6), bit32.band(nextByte, 63))
 			else
@@ -646,85 +692,90 @@ return function(source : buffer)
 
 	for byte in peek do
 		if IsAlphabeticalIdentifier(byte) then -- words (a-Z_)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getWordLength(byte)
-			addToken(Length, TokenType, CurrentLine, true)
+			addSameLineToken(Length, TokenType, currentLine)
 		elseif IsDigit(byte) then -- numbers (0-9)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getNumberLength()
-			addToken(Length, TokenType, CurrentLine, true)
+			addSameLineToken(Length, TokenType, currentLine)
 		elseif IsAssignable(byte) then -- assignable (+*%^<>~=)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getAssignmentLength(byte)
-			addToken(Length, TokenType, CurrentLine, true)
+			addSameLineToken(Length, TokenType, currentLine)
 		elseif byte == 91 then -- multilined string ([[...]] / [=[...]=])
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local nextbyte = peek(1)
 
 			if nextbyte == 91 or nextbyte == 61 then
 				local Length, TokenType = getMultiLinedString(nextbyte)
-				addToken(Length, TokenType, CurrentLine, true)
+				addToken(Length, TokenType, currentLine, true)
 			else
 				addByte()
 			end
 		elseif byte == 34 or byte == 39 then -- double quote (") / single quote (')
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getNormalStringLength(byte)
-			addToken(Length, TokenType, CurrentLine, true)
+			addSameLineToken(Length, TokenType, currentLine)
 		elseif byte == 96 then -- string interpolation (`)
-			local CurrentLine = currentLine
+			ConsumeLines()
+
 			local Length, TokenType = readInterpolatedStringSection("InterpStringBegin", "InterpStringSimple")
-			addToken(Length, TokenType, CurrentLine, true)
+			addToken(Length, TokenType, currentLine, true)
 		elseif byte == 45 then -- minus (-)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local nextbyte = peek(1)
 
 			if nextbyte then
 				if nextbyte == 45 then -- comment (--)
 					local Length, TokenType = getCommentLength()
-					addToken(Length, TokenType, CurrentLine, true)
+					addToken(Length, TokenType, currentLine, true)
 				else
 					local Length, TokenType = getSubtractionLength(nextbyte)
-					addToken(Length, TokenType, CurrentLine, true)
+					addToken(Length, TokenType, currentLine, true)
 				end
 			else
 				addByte()
 			end
 		elseif byte == 47 then -- division (/) / (//) / (//=)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getDivisionLength()
-			addToken(Length, TokenType, CurrentLine, true)
+			addToken(Length, TokenType, currentLine, true)
 		elseif byte == 46 then -- dots (.) / concat (..) / vargs (...)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getDotLength()
-			addToken(Length, TokenType, CurrentLine, true)
+			addToken(Length, TokenType, currentLine, true)
 		elseif byte == 58 then -- colons (:) / (::)
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getColonLength()
-			addToken(Length, TokenType, CurrentLine, true)
+			addToken(Length, TokenType, currentLine, true)
 		elseif byte == 64 then -- Attributes @
-			local CurrentLine = currentLine
+			ConsumeLines()
 			local Length, TokenType = getAttributeLength()
-			addToken(Length, TokenType, CurrentLine, true)
+			addToken(Length, TokenType, currentLine, true)
 		elseif byte == 125 then -- closed bracket (})
-			if stringinterpolationdepth ~= 0 then
-				local CurrentLine = currentLine
+			ConsumeLines()
+
+			if stringInterpDepth ~= 0 then
 				local Length, TokenType = readInterpolatedStringSection("InterpStringMid", "InterpStringEnd")
-				addToken(Length, TokenType, CurrentLine, true)
-				stringinterpolationdepth -= 1
+				addToken(Length, TokenType, currentLine, true)
+				stringInterpDepth -= 1
 			else
 				addByte()
 			end
 		elseif IsWhitespace(byte) then
-			consume(1)
+			ConsumeBytes(1)
 		elseif not IsLexerable(byte) and byte >= 128 then
+			ConsumeLines()
 			local Length, Codepoint = readUtf8Error(byte)
-			addToken(Length, "BrokenUnicode", currentLine, true, Codepoint)
+			addUnicodeToken(Length, currentLine, Codepoint)
 		else
+			ConsumeLines()
 			addByte()
 		end
 	end
+	ConsumeLines()
 	addToken(0, "Eof", currentLine, false)
 
-	return Tokens
+	return tokens
 end

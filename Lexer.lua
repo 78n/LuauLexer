@@ -1,17 +1,18 @@
 --!optimize 2
 --!native
 
-export type TokenKind = "BrokenUnicode" | "Character" | "Number" |
-"QuotedString" | "BrokenString" | "Comment" |
-"BlockComment" | "BrokenComment" | "RawString" |
-"BrokenString" | "Attribute" | "SubAssign" |
-"SkinnyArrow" | "DivAssign" | "FloorDiv" |
-"DoubleColon" | "ConcatAssign" |
-"Dot3" | "Dot2" | "AddAssign" |
-"MulAssign" | "ModAssign" | "PowAssign" |
-"LessEqual" | "GreaterEqual" | "NotEqual" |
-"Equal" | "BrokenString" | "BrokenInterpDoubleBrace" |
-"InterpStringBegin" | "InterpStringSimple" | "InterpStringMid"
+-- Written by https://github.com/78n
+-- Ported to Luau https://github.com/luau-lang/luau/blob/master/Ast/src/Lexer.cpp
+
+export type TokenKind = "Number" | "Character" |
+"QuotedString" | "RawString" | "BrokenString" |
+"InterpStringBegin" | "InterpStringMid" | "InterpStringSimple" | "BrokenInterpDoubleBrace" |
+"Comment" | "BlockComment" | "BrokenComment" |
+"AddAssign" | "SubAssign" | "MulAssign" | "DivAssign" | "FloorDiv" | "ModAssign" | "PowAssign" | "ConcatAssign" |
+"Equal" | "NotEqual" | "LessEqual" | "GreaterEqual" |
+"Dot2" | "Dot3" |
+"DoubleColon" | "SkinnyArrow" | "Attribute" |
+"BrokenUnicode" | "Eof"
 
 export type TokenInfo = {
 	Line : number,
@@ -33,14 +34,8 @@ export type Token = {
 
 export type Tokens = {Token}
 
--- most of these byte comparison functions should be inlined
-
---- Compares byte to assignable bytes
 --- Character set: [+*%^<>~=]
 --- Byte set: [\43\42\37\94\60\62\126\61]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is an assignable byte
 local function IsAssignable(byte : number) : boolean -- basically just for character= assignable stuff
 	return byte == 43 -- +
 		or byte == 	42 -- *
@@ -50,105 +45,53 @@ local function IsAssignable(byte : number) : boolean -- basically just for chara
 		or byte == 62 -- >
 		or byte == 126 -- ~
 		or byte == 61 -- =
-	-- or byte == 46 -- . / not needed here since it is handled elsewhere
+		--or byte == 46 -- . / not needed here since it is handled in getDotLength
 end
 
---- Compares byte to lexerable bytes
---- Character set: [#(){];,&|?]
---- Byte set: [\35\40\41\123\125\93\59\44\38\124\63]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is a lexerable byte
-local function IsLexerable(byte : number) -- should only contain lexable bytes that ARE NOT ALREADY CHECKED
-	return byte == 35 -- #
-		or byte == 40 -- (
-		or byte == 41 -- )
-		or byte == 123 -- {
-		--or byte == 125 -- } / not needed here since it is handled in the main loop
-		or byte == 93 -- ]
-		or byte == 59 -- ;
-		or byte == 44 -- ,
-		or byte == 38 -- &
-		or byte == 124 -- |
-		or byte == 63 -- ?
-end
-
---- Compares byte to lowercase alphabetical bytes
 --- Character set: [a-z]
 --- Byte set: [\97-\122]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is a lowercase alphabetical byte
 local function IsLowerAlphabetical(byte : number)
 	return byte >= 97 and byte <= 122
 end
 
---- Compares byte to digit bytes
 --- Character set: [0-9]
 --- Byte set: [\48-57]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is a digit byte
 local function IsDigit(byte : number)
 	return byte >= 48 and byte <= 57
 end
 
---- Compares byte to alphabetical bytes
 --- Character set: [a-Z]
 --- Byte set: [\97-122\65-\90]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is an alphabetical byte
 local function IsAlphabetical(byte : number)
 	return IsLowerAlphabetical(byte) or (byte >= 65 and byte <= 90)
 end
 
---- Compares byte to alphanumerical bytes
 --- Character set: [0-9] & [a-Z]
 --- Byte set: [\48-\57\97-122\65-\90]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is an alphanumerical byte
 local function IsAlphanumeric(byte : number)
 	return IsDigit(byte) or IsAlphabetical(byte)
 end
 
---- Compares byte to alphabetical identifier bytes
 --- Character set: [a-Z] & _
 --- Byte set: [\97-122\65-\90\95]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is an alphabetical identifier byte
 local function IsAlphabeticalIdentifier(byte : number)
 	return IsAlphabetical(byte) or byte == 95
 end
 
---- Compares byte to alphaNumerical identifier bytes
 --- Character set: [0-9] & [a-Z] & _
 --- Byte set: [\48-\57\97-122\65-\90\95]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is an identifier byte
 local function IsAlphanumericIdentifier(byte : number)
 	return IsAlphanumeric(byte) or byte == 95
 end
 
---- Compares byte to newline bytes
 --- Character set: [\n\r]
 --- Byte set: [\10\13]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is a newline byte
 local function IsNewLine(byte : number)
 	return byte == 10 or byte == 13 -- \n \r
 end
 
---- Compares byte to whitespace bytes
 --- Character set: [\t\n\v\f\r ]
 --- Byte set: [\9-\13\32]
----
---- @param byte number The byte you are comparing
---- @return boolean Returns a boolean corisponding to if the provided byte is a whitespace byte
 local function IsWhitespace(byte : number)
 	return byte >= 9 and byte <= 13 or byte == 32
 end
@@ -167,7 +110,7 @@ local compiledReservedWords = {} do
 		"for", "function", "if", "in", "local", "nil", "not",
 		"or", "repeat", "return", "then", "true", "until", "while"
 	}
-	
+
 	for i,v in reservedWords do
 		if #v ~= 0 then
 			local firstbyte = string.byte(v, 1)
@@ -181,82 +124,78 @@ local compiledReservedWords = {} do
 	end
 end
 
-return function(source : buffer)
-	local tokens = {}
-	local tokenCount = 0
-
+return function(source : buffer) : Tokens
 	local sourceSize = buffer.len(source)
-	local base0Size = sourceSize - 1
+	local braceStack = {} -- true if the brace is in an interpoled string, false if its in an escape
+	local tokens = {}
 	
 	local furthestPosition = -1
-	local stringInterpDepth = 0
-	
 	local currentPosition = 0
-	local currentLine = 1
-	local steppedLines = 0
 
-	local function ConsumeBytes(Amount : number)
+	local steppedLines = 0
+	local currentLine = 1
+
+	local function consume(Amount : number)
 		currentPosition += Amount
 	end
 
-	local function ConsumeLines()
+	local function consumeLines()
 		if steppedLines ~= 0 then
 			currentLine += steppedLines
 			steppedLines = 0
 		end
 	end
 
-	local function AppendToken<t>(TokenData : t)
-		tokenCount += 1
-		tokens[tokenCount] = TokenData
+	local function appendToken(TokenData : Token)
+		table.insert(tokens, TokenData)
 	end
 
-	local function CreateTokenInfo(length : number, startLine : number, endLine : number)
+	local function createTokenInfo(length : number, startLine : number, endLine : number)
 		return {
 			Start = CreatePositionInfo(currentPosition, startLine),
 			End = CreatePositionInfo(currentPosition + length, endLine)
 		}
 	end
 
-	local function addToken(tokenLength : number, tokenType : string, startLine : number, shouldConsume : boolean)
-		AppendToken({
+	local function addToken(tokenLength : number, tokenType : string, startLine : number, dontconsume : boolean?)
+		appendToken({
 			Value = buffer.readstring(source, currentPosition, tokenLength),
 			Kind = tokenType,
-			Info = CreateTokenInfo(tokenLength, startLine, currentLine + steppedLines)
+			Info = createTokenInfo(tokenLength, startLine, currentLine + steppedLines)
 		})
 
-		if shouldConsume then
-			ConsumeBytes(tokenLength)
+		if not dontconsume then
+			consume(tokenLength)
 		end
 	end
 
 	local function addUnicodeToken(unicodeLength : number, startline : number, codepoint : number?)
-		AppendToken({
+		appendToken({
 			Value = buffer.readstring(source, currentPosition, unicodeLength),
 			Kind = "BrokenUnicode",
-			Info = CreateTokenInfo(unicodeLength, startline, startline),
+			Info = createTokenInfo(unicodeLength, startline, startline),
 			Codepoint = codepoint
 		})
 
-		ConsumeBytes(unicodeLength)
+		consume(unicodeLength)
 	end
 
 	local function addSameLineToken(tokenLength : number, tokenType : string, startLine : number)
-		AppendToken({
+		appendToken({
 			Value = buffer.readstring(source, currentPosition, tokenLength),
 			Kind = tokenType,
-			Info = CreateTokenInfo(tokenLength, startLine, startLine)
+			Info = createTokenInfo(tokenLength, startLine, startLine)
 		})
 
-		ConsumeBytes(tokenLength)
+		consume(tokenLength)
 	end
 
 	local function addByte()
-		addToken(1, "Character", currentLine, true)
+		addToken(1, "Character", currentLine)
 	end
 
 	local function canPeek(Amount : number)
-		return currentPosition + Amount <= base0Size
+		return currentPosition + Amount < sourceSize
 	end
 
 	local function rawPeek(Amount : number)
@@ -271,10 +210,21 @@ return function(source : buffer)
 	end
 
 	local function peek(Amount : number?)
-		return if canPeek(Amount or 0) then
-			rawPeek(Amount or 0)
-		else
-			nil -- return nil here just to make it an iterator
+		return if canPeek(Amount or 0) then rawPeek(Amount or 0) else nil -- nil here to make it an iterator
+	end
+
+	local function readName(offset)
+		while canPeek(offset) do
+			local byte = rawPeek(offset)
+
+			if not IsAlphanumericIdentifier(byte) then
+				break
+			end
+
+			offset += 1
+		end
+		
+		return offset
 	end
 
 	local function getNumberLength()
@@ -295,23 +245,10 @@ return function(source : buffer)
 		if expByte and (expByte == 101 or expByte == 69) then -- E/e
 			local signByte = peek(offset + 1)
 
-			offset += if signByte and (signByte == 43 or signByte == 45) then -- + -
-					2
-				else
-					1
+			offset += if signByte and (signByte == 43 or signByte == 45) then 2 else 1 -- +-
 		end
 
-		while canPeek(offset) do
-			local byte = rawPeek(offset)
-
-			if not IsAlphanumericIdentifier(byte) then -- A-z 0-9 _
-				break
-			end
-
-			offset += 1
-		end
-
-		return offset, "Number"
+		return readName(offset), "Number"
 	end
 
 	local function readBackSlash(offset : number)
@@ -371,7 +308,7 @@ return function(source : buffer)
 					offset += 1
 				end
 
-				if byte ~= 61 then
+				if byte ~= 61 then -- =
 					break
 				end
 			end
@@ -385,10 +322,7 @@ return function(source : buffer)
 			local byte = rawPeek(i)
 
 			if byte ~= 61 then -- does not equal an =
-				return false, if byte == 93 and canPeek(i + EqualsAmount + 1) then
-						i-1 -- recheck the byte as I cannot recursively check as a certain character case would cause a stack overflow which would cause this to have a stack overflow
-					else
-						i
+				return false, i
 			end
 		end
 
@@ -404,7 +338,7 @@ return function(source : buffer)
 			while canPeek(offset) do
 				local byte = rawPeek(offset)
 
-				if byte == 93 then
+				if byte == 93 then -- ]
 					if canPeek(1 + offset + Equals) then -- check if the rest of the string is possible to close (ie ===])
 						local ValidClose, CheckedAmount = getClosingEquals(offset+1, Equals)
 
@@ -413,17 +347,15 @@ return function(source : buffer)
 						end
 						offset = CheckedAmount
 					else
-						return false, base0Size - currentPosition
+						return false, sourceSize - currentPosition
 					end
 				else
 					offset += 1
 				end
 			end
-
 			return false, offset
 		end
-
-		return nil, Equals -- nil for comments
+		return nil, Equals+1 -- nil for comments
 	end
 
 	local function getMultiLineLength(baseoffset : number)
@@ -447,7 +379,6 @@ return function(source : buffer)
 				baseoffset += 1
 			end
 		end
-
 		return false, baseoffset -- isnt closed
 	end
 
@@ -468,23 +399,20 @@ return function(source : buffer)
 			end
 
 			if ismultilinedlongbyte == 91 or ismultilinedlongbyte == 61 then
-				if ismultilinedlongbyte == 91 then
-					local IsValid, Length = getMultiLineLength(4)
+				local tempStepped = steppedLines
+				local IsValid, Length
 
-					return Length, if IsValid then
-							"BlockComment"
-						else
-							"BrokenComment"
+				if ismultilinedlongbyte == 91 then
+					IsValid, Length = getMultiLineLength(4)
+
+					return Length, (if IsValid then "BlockComment" else "BrokenComment"), tempStepped ~= steppedLines
 				end
-				local IsValid, Length = getLongMultiLength(3)
+				IsValid, Length = getLongMultiLength(3)
 
 				if IsValid ~= nil then
-					return Length, if IsValid then
-							"BlockComment"
-						else
-							"BrokenComment"
+					return Length, (if IsValid then "BlockComment" else "BrokenComment"), tempStepped ~= steppedLines
 				end
-				offset = Length + 2 -- basically --[==invalid[ turns it into a single line Comment
+				offset = Length + 1 -- basically --[==invalid[ turns it into a single line Comment
 			else
 				offset = 4 -- no point in rechecking the [\.
 			end
@@ -501,86 +429,46 @@ return function(source : buffer)
 
 			offset += 1
 		end
-
 		return offset, "Comment" -- 2 to account for the comment (--)
 	end
 
 	local function getMultiLinedString(firstbyte : number)
-		if firstbyte == 61 then
-			local IsValid, Equals = getLongMultiLength(1)
+		local IsValid, Length = (if firstbyte == 61  then getLongMultiLength else getMultiLineLength)(1)
 
-			return Equals, if IsValid then
-					"RawString"
-				else
-					"BrokenString"
-		end
-		local IsValid, Length = getMultiLineLength(1)
-
-		return Length, if IsValid then
-				"RawString"
-			else
-				"BrokenString"
+		return Length, (if IsValid then "RawString" else "BrokenString")
 	end
 
 	local function getWordLength(compiledword : number)
-		local offset = 1
+		local offset = readName(1)
 
-		while canPeek(offset) do
-			local byte = rawPeek(offset)
-
-			if not IsAlphanumericIdentifier(byte) then
-				break
-			end
-
-			offset += 1
-		end
-
-		return offset, compiledReservedWords[buffer.readstring(source, currentPosition, offset)] or "Name" -- its overall better to just do one readstring request as it only creates 1 new string instead of a million different strings for each concat, additionally its an unknown for how long someone may name a variable
+		return offset, compiledReservedWords[buffer.readstring(source, currentPosition, offset)] or "Name"
 	end
 
-	local function getAttributeLength() -- wow this code looks farmilier
-		local offset = 1
-
-		while canPeek(offset) do
-			local byte = rawPeek(offset)
-
-			if not IsAlphanumericIdentifier(byte) then
-				break
-			end
-
-			offset += 1
-		end
-
-		return offset, "Attribute"
+	local function getAttributeLength()
+		return readName(1), "Attribute"
 	end
 
 	local function getSubtractionLength(nextbyte : number?)
-		if nextbyte == 61 or nextbyte == 62 then
-			return 2, if nextbyte == 61 then
-					"SubAssign"
-				else
-					"SkinnyArrow"
+		if nextbyte == 61 or nextbyte == 62 then -- =>
+			return 2, (if nextbyte == 61 then "SubAssign" else "SkinnyArrow")
 		end
 		return 1, "Character"
 	end
 
 	local function getDivisionLength()
-		if peek(1) == 47 then
-			if peek(2) == 47 then
+		if peek(1) == 47 then -- /
+			if peek(2) == 47 then -- /
 				return 3, "DivAssign"
 			end
-			
 			return 2, "FloorDiv"
 		end
-
 		return 1, "Character"
 	end
 
 	local function getColonLength()
-		if peek(1) == 58 then
+		if peek(1) == 58 then -- :
 			return 2, "DoubleColon"
 		end
-
 		return 1, "Character"
 	end
 
@@ -592,10 +480,7 @@ return function(source : buffer)
 				local thirdByte = peek(2)
 
 				if thirdByte and (thirdByte == 47 or thirdByte == 46) then
-					return 3, if thirdByte == 47 then
-							"ConcatAssign"
-						else
-							"Dot3"
+					return 3, (if thirdByte == 47 then "ConcatAssign" else "Dot3")
 				end
 				return 2, "Dot2"
 			elseif IsDigit(secondbyte) then
@@ -604,27 +489,11 @@ return function(source : buffer)
 		end
 		return 1, "Character"
 	end
-	
+
 	local function getAssignmentLength(byte : number)
 		if peek(1) == 61 then
-			return 2, if byte == 43 then
-					"AddAssign"
-				elseif byte == 42 then
-					"MulAssign"
-				elseif byte == 37 then
-					"ModAssign"
-				elseif byte == 94 then
-					"PowAssign"
-				elseif byte == 60 then
-					"LessEqual"
-				elseif byte == 62 then
-					"GreaterEqual"
-				elseif byte == 126 then
-					"NotEqual"
-				else
-					"Equal"
+			return 2, (if byte == 43 then "AddAssign" elseif byte == 42 then "MulAssign" elseif byte == 37 then "ModAssign" elseif byte == 94 then "PowAssign" elseif byte == 60 then "LessEqual" elseif byte == 62 then "GreaterEqual" elseif byte == 126 then "NotEqual" else "Equal")
 		end
-
 		return 1, "Character"
 	end
 
@@ -640,13 +509,10 @@ return function(source : buffer)
 			elseif IsNewLine(byte) or byte == 0 then -- \n\r\0
 				return offset, "BrokenString"
 			elseif byte == 92 then -- \
-				lastescape = if lastescape ~= offset - 1 then offset else nil
-				offset += if peek(offset + 1) == 117 and peek(offset + 2) == 123 then
-						3 -- offsetting for \u{
-					else
-						readBackSlash(offset)
+				lastescape = lastescape ~= offset - 1 and offset
+				offset += (if peek(offset + 1) == 117 and peek(offset + 2) == 123 then 3 else readBackSlash(offset)) -- offsetting for \u{
 			elseif byte == 123 and lastescape ~= offset - 1 then -- {
-				stringInterpDepth += 1
+				table.insert(braceStack, true)
 				if peek(offset + 1) == 123 then
 					return offset + 2, "BrokenInterpDoubleBrace"
 				end
@@ -656,7 +522,6 @@ return function(source : buffer)
 				offset += 1
 			end
 		end
-
 		return offset, endType
 	end
 
@@ -686,96 +551,88 @@ return function(source : buffer)
 				return i, nil
 			end
 		end
-
 		return size, codepoint
 	end
 
 	for byte in peek do
-		if IsAlphabeticalIdentifier(byte) then -- words (a-Z_)
-			ConsumeLines()
-			local Length, TokenType = getWordLength(byte)
-			addSameLineToken(Length, TokenType, currentLine)
-		elseif IsDigit(byte) then -- numbers (0-9)
-			ConsumeLines()
-			local Length, TokenType = getNumberLength()
-			addSameLineToken(Length, TokenType, currentLine)
-		elseif IsAssignable(byte) then -- assignable (+*%^<>~=)
-			ConsumeLines()
-			local Length, TokenType = getAssignmentLength(byte)
-			addSameLineToken(Length, TokenType, currentLine)
-		elseif byte == 91 then -- multilined string ([[...]] / [=[...]=])
-			ConsumeLines()
-			local nextbyte = peek(1)
-
-			if nextbyte == 91 or nextbyte == 61 then
-				local Length, TokenType = getMultiLinedString(nextbyte)
-				addToken(Length, TokenType, currentLine, true)
-			else
-				addByte()
-			end
-		elseif byte == 34 or byte == 39 then -- double quote (") / single quote (')
-			ConsumeLines()
-			local Length, TokenType = getNormalStringLength(byte)
-			addSameLineToken(Length, TokenType, currentLine)
-		elseif byte == 96 then -- string interpolation (`)
-			ConsumeLines()
-
-			local Length, TokenType = readInterpolatedStringSection("InterpStringBegin", "InterpStringSimple")
-			addToken(Length, TokenType, currentLine, true)
-		elseif byte == 45 then -- minus (-)
-			ConsumeLines()
-			local nextbyte = peek(1)
-
-			if nextbyte then
-				if nextbyte == 45 then -- comment (--)
-					local Length, TokenType = getCommentLength()
-					addToken(Length, TokenType, currentLine, true)
-				else
-					local Length, TokenType = getSubtractionLength(nextbyte)
-					addToken(Length, TokenType, currentLine, true)
-				end
-			else
-				addByte()
-			end
-		elseif byte == 47 then -- division (/) / (//) / (//=)
-			ConsumeLines()
-			local Length, TokenType = getDivisionLength()
-			addToken(Length, TokenType, currentLine, true)
-		elseif byte == 46 then -- dots (.) / concat (..) / vargs (...)
-			ConsumeLines()
-			local Length, TokenType = getDotLength()
-			addToken(Length, TokenType, currentLine, true)
-		elseif byte == 58 then -- colons (:) / (::)
-			ConsumeLines()
-			local Length, TokenType = getColonLength()
-			addToken(Length, TokenType, currentLine, true)
-		elseif byte == 64 then -- Attributes @
-			ConsumeLines()
-			local Length, TokenType = getAttributeLength()
-			addToken(Length, TokenType, currentLine, true)
-		elseif byte == 125 then -- closed bracket (})
-			ConsumeLines()
-
-			if stringInterpDepth ~= 0 then
-				local Length, TokenType = readInterpolatedStringSection("InterpStringMid", "InterpStringEnd")
-				addToken(Length, TokenType, currentLine, true)
-				stringInterpDepth -= 1
-			else
-				addByte()
-			end
-		elseif IsWhitespace(byte) then
-			ConsumeBytes(1)
-		elseif not IsLexerable(byte) and byte >= 128 then
-			ConsumeLines()
-			local Length, Codepoint = readUtf8Error(byte)
-			addUnicodeToken(Length, currentLine, Codepoint)
+		if IsWhitespace(byte) then
+			consume(1)
 		else
-			ConsumeLines()
-			addByte()
+			consumeLines()
+
+			if IsAlphabeticalIdentifier(byte) then -- words (a-Z_)
+				local Length, TokenType = getWordLength(byte)
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif IsDigit(byte) then -- numbers (0-9)
+				local Length, TokenType = getNumberLength()
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif IsAssignable(byte) then -- assignable (+*%^<>~=)
+				local Length, TokenType = getAssignmentLength(byte)
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 91 then -- multilined string ([[...]] / [=[...]=])
+				local nextbyte = peek(1)
+
+				if nextbyte == 91 or nextbyte == 61 then
+					local Length, TokenType = getMultiLinedString(nextbyte)
+					addToken(Length, TokenType, currentLine)
+				else
+					addByte()
+				end
+			elseif byte == 34 or byte == 39 then -- double quote (") / single quote (')
+				local Length, TokenType = getNormalStringLength(byte)
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 96 then -- string interpolation (`)
+				local Length, TokenType = readInterpolatedStringSection("InterpStringBegin", "InterpStringSimple")
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 45 then -- minus (-)
+				local nextbyte = peek(1)
+
+				if nextbyte then
+					if nextbyte == 45 then -- comment (--)
+						local Length, TokenType, IsMultiLined = getCommentLength();
+
+						(if IsMultiLined then addToken else addSameLineToken)(Length, TokenType, currentLine)
+					else -- (-) / (-=) / (->)
+						local Length, TokenType = getSubtractionLength(nextbyte)
+						addSameLineToken(Length, TokenType, currentLine)
+					end
+				else
+					addByte()
+				end
+			elseif byte == 47 then -- division (/) / (//) / (//=)
+				local Length, TokenType = getDivisionLength()
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 46 then -- dots (.) / concat (..) / vargs (...)
+				local Length, TokenType = getDotLength()
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 58 then -- colons (:) / (::)
+				local Length, TokenType = getColonLength()
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 64 then -- Attributes @
+				local Length, TokenType = getAttributeLength()
+				addSameLineToken(Length, TokenType, currentLine)
+			elseif byte == 123 then -- open brace ({)
+				if braceStack[1] ~= nil then
+					table.insert(braceStack, false)
+				end
+				addByte()
+			elseif byte == 125 then -- closed brace (})
+				if braceStack[1] ~= nil and table.remove(braceStack) then
+					local Length, TokenType = readInterpolatedStringSection("InterpStringMid", "InterpStringEnd")
+					addSameLineToken(Length, TokenType, currentLine)
+				else
+					addByte()
+				end
+			elseif byte >= 128 then
+				local Length, Codepoint = readUtf8Error(byte)
+				addUnicodeToken(Length, currentLine, Codepoint)
+			else
+				addByte()
+			end
 		end
 	end
-	ConsumeLines()
-	addToken(0, "Eof", currentLine, false)
+	consumeLines()
+	addSameLineToken(0, "Eof", currentLine)
 
 	return tokens
 end
